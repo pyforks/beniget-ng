@@ -106,7 +106,6 @@ class ImportInfo:
         else:
             return self.orgmodule
 
-_alias_needs_lineno = platform.python_implementation().lower() == 'cpython' and sys.version_info < (3,10)
 
 # The MIT License (MIT)
 # Copyright (c) 2017 Jelle Zijlstra
@@ -122,11 +121,6 @@ def parse_import(node, modname, is_package=False):
     """
     result = {}
 
-    # This seems to be the most resonable place to fix the ast.alias node not having
-    # proper line number information on python3.9 and before.
-    if _alias_needs_lineno:
-        for alias in node.names:
-            alias.lineno = node.lineno
     typename = type(node).__name__
     if typename == 'Import':
         for al in node.names:

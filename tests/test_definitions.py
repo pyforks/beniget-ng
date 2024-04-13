@@ -472,7 +472,10 @@ class TestDefIsLive(TestCase):
         else:
             _PY37PLUS = False
         '''
-        self.checkLiveLocals(code, ["sys:2", "_PY37PLUS:4,6"], ["sys:2", "_PY37PLUS:4,6"])
+        if sys.version_info>=(3,10):
+            self.checkLiveLocals(code, ["sys:2", "_PY37PLUS:4,6"], ["sys:2", "_PY37PLUS:4,6"])
+        else:
+            self.checkLiveLocals(code, ["sys:None", "_PY37PLUS:4,6"], ["sys:None", "_PY37PLUS:4,6"])
     
     def test_BuiltinNameRedefConditional(self):
         code = '''
@@ -485,8 +488,12 @@ class TestDefIsLive(TestCase):
                 def exceptions(self):
                     pass
         '''
-        self.checkLiveLocals(code, ['sys:2', 'property:3', 'ExceptionGroup:6'], 
+        if sys.version_info>=(3,10):
+            self.checkLiveLocals(code, ['sys:2', 'property:3', 'ExceptionGroup:6'], 
                                 ['sys:2', 'property:3', 'ExceptionGroup:6'])
+        else:
+            self.checkLiveLocals(code, ['sys:None', 'property:3', 'ExceptionGroup:6'], 
+                                ['sys:None', 'property:3', 'ExceptionGroup:6'])
     
     def test_loop_body_might_not_run(self):
         code = """
