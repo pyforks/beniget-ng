@@ -1465,12 +1465,16 @@ def property(f):...
         for code in cases:
             if ':=' in code and sys.version_info < (3,8):
                 continue
+            if 'await' in code and sys.version_info < (3,7):
+                continue
             code = f'from __future__ import annotations\n' + code
             with self.subTest(code):
                 self.check_message(code, ['cannot be used in annotation-like scopes'])
         
         for code in cases:
             if ':=' in code and sys.version_info < (3,8):
+                continue
+            if 'await' in code and sys.version_info < (3,7):
                 continue
             with self.subTest(code):
                 # TODO: From python 3.13, this should generate the same error.
@@ -1910,7 +1914,23 @@ class B[decorator](object):
         for case in error_cases:
             with self.subTest(case=case):
                 self.check_message(code.format(case), ["in annotation scope within class scope"])
+    
+    @skipIf(sys.version_info < (3,12), "Python 3.12 syntax")
+    def test_pep695_later_defined_typevar_reference(self):
+        cases = [
+            'class o[T:(S,),S]:...',
+            'def o[T:(S,),S]():...',
+            'type o[T:(S,),S]=...', ]
+
+        for code in cases:
+            with self.subTest(code):
+                self.checkChains(code, ['o -> ()'])
         
+        for code in cases:
+            code = 'S = 1\n' + code
+            with self.subTest(code):
+                self.checkChains(code, ['S -> ()', 'o -> ()'])
+
     @skipIf(sys.version_info < (3,10), "Python 3.10 syntax")
     def test_match_value(self):
         code = '''

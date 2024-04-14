@@ -1863,6 +1863,7 @@ class DefUseChains(ast.NodeVisitor):
             visitor(node.d, in_def695=True)
 
     def visit_TypeVar(self, node):
+        # these nodes can only be visited under a def695 scope
         dnode = self.chains.setdefault(node, Def(node))
         self.set_definition(node.name, dnode)
         self.add_to_locals(node.name, dnode)
@@ -2022,11 +2023,12 @@ def lookup_annotation_name_defs(name, heads, locals_map):
     """
     scopes = _get_lookup_scopes(heads)
     scopes_len = len(scopes)
-    if scopes_len>1:
+    if scopes_len > 1 and not isinstance(scopes[-1], def695):
         # start by looking at module scope first,
         # then try the theoretical runtime scopes.
         # putting the global scope last in the list so annotation are
         # resolve using he global namespace first. this is the way pyright does.
+        # EXCEPT is we're direcly inside a pep695 scope, in this case follow usual rules.
         scopes.append(scopes.pop(0))
     try:
         return _lookup(name, scopes, locals_map)
@@ -2058,7 +2060,9 @@ def _get_lookup_scopes(heads):
         # we got only a global scope
         return direct_scopes
     else:
-        if heads and isinstance(direct_scopes[-1], def695) and type(heads[-1]).__name__ == 'ClassDef':
+        if (heads and isinstance(direct_scopes[-1], def695) and 
+            type(heads[-1]).__name__ == 'ClassDef'):
+            # include the enclosing class scope in case we're in a def695 scope
             direct_scopes.insert(0, heads.pop(-1))
     # more of less modeling what's described here.
     # https://github.com/gvanrossum/gvanrossum.github.io/blob/main/formal/scopesblog.md
