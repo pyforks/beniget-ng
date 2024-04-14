@@ -1,1 +1,1 @@
-git+https://github.com/serge-sans-paille/gast.git
+gast @ git+https://github.com/serge-sans-paille/gast.git
