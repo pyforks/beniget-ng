@@ -1,8 +1,6 @@
-from collections import defaultdict, OrderedDict, deque
+from collections import defaultdict, deque
 from contextlib import contextmanager
-import itertools
 import sys
-import platform
 import os.path
 
 import ast as _ast
