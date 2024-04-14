@@ -348,6 +348,22 @@ while done:
     def test_redef_try_except(self):
         code = 'try: f = open("")\nexcept Exception as f: pass\nf'
         self.checkChains(code, ["f -> (f -> ())", "f -> (f -> ())"])
+    
+    def test_simple_try_star(self):
+        code = 'try: e = open("/dev/null")\nexcept* Exception: pass\ne'
+        self.checkChains(code, ["e -> (e -> ())"])
+
+    def test_simple_except_star(self):
+        code = "try: pass\nexcept* Exception as e: pass\ne"
+        self.checkChains(code, ["e -> (e -> ())"])
+
+    def test_simple_try_except_star(self):
+        code = 'try: f = open("")\nexcept* Exception as e: pass\ne;f'
+        self.checkChains(code, ["f -> (f -> ())", "e -> (e -> ())"])
+
+    def test_redef_try_except_star(self):
+        code = 'try: f = open("")\nexcept* Exception as f: pass\nf'
+        self.checkChains(code, ["f -> (f -> ())", "f -> (f -> ())"])
 
     def test_simple_import(self):
         code = "import x; x"
