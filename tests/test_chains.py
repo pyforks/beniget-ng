@@ -1463,13 +1463,17 @@ def property(f):...
             "x: (await 42) = True",]
 
         for code in cases:
+            if ':=' in code and sys.version_info < (3,8):
+                continue
             code = f'from __future__ import annotations\n' + code
             with self.subTest(code):
                 self.check_message(code, ['cannot be used in annotation-like scopes'])
         
         for code in cases:
+            if ':=' in code and sys.version_info < (3,8):
+                continue
             with self.subTest(code):
-                # From python 3.13, this should generate the same error.
+                # TODO: From python 3.13, this should generate the same error.
                 self.check_message(code, [])
     
     # PEP-695 test cases taken from https://github.com/python/cpython/pull/103764/files
