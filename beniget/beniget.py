@@ -429,6 +429,55 @@ def potential_module_names(filename):
     return tuple(names) or ('',)
 
 
+def matches_qualname(heads, locals, imports, modnames, expr, qnames):
+    """
+    Returns True if - one of - the expression's definition(s) matches
+    one of the given qualified names.
+
+    The expression definition is looked up with 
+    `lookup_annotation_name_defs`.
+
+    :param heads: The current scopes.
+    :param locals: The locals mapping.
+    :param imports: The mapping of resolved imports.
+    :param modnames: A collection containing the name of the current module. 
+    :param expr: The name/attribute expression to match.
+    :param qnames: A collection of qualified names to look for.
+    """
+    
+    typename = type(expr).__name__
+    if typename == 'Name':
+        try:
+            defs = lookup_annotation_name_defs(expr.id, heads, locals)
+        except Exception:
+            return False
+        
+        for d in defs:
+            if type(d.node).__name__ == 'alias':
+                # the symbol is an imported name
+                import_alias = imports[d.node].target()
+                if any(import_alias == n for n in qnames):
+                    return True
+            elif any('{}.{}'.format(mod, d.name()) in qnames for mod in modnames):
+                # the symbol is a localy defined name
+                return True
+            else:
+                # localy defined name, but module name doesn't match
+                break
+
+    elif typename == 'Attribute':
+        for n in qnames:
+            mod, _, _name = n.rpartition('.')
+            if mod and expr.attr == _name:
+                if matches_qualname(heads, locals, imports, modnames, expr.value, set((mod,))):
+                    return True
+    return False
+
+def matches_typing_name(heads, locals, imports, modnames, expr, name):
+    return matches_qualname(heads, locals, imports, modnames, expr, 
+                            set(('typing.{}'.format(name), 
+                                 'typing_extensions.{}'.format(name))))
+
 class DefUseChains(ast.NodeVisitor):
     """
     Module visitor that gathers two kinds of informations:
@@ -492,7 +541,7 @@ class DefUseChains(ast.NodeVisitor):
         #   filename is a relative filename that starts at the package root. 
         # - We deduce whether the module is a package from module name or filename
         #   if they ends with __init__.
-        # - The module name doesn't have to be provided to use _is_qualname() 
+        # - The module name doesn't have to be provided to use matches_qualname() 
         #   if filename is provided.
         is_package = False
         if filename and posixpath_splitparts(filename)[-1].split('.')[0] == '__init__':
@@ -554,48 +603,6 @@ class DefUseChains(ast.NodeVisitor):
     #
     ## helpers
     #
-
-    def _is_qualname(self, expr, qnames):
-        """
-        Returns True if - one of - the expression's definition(s) matches
-        one of the given qualified names.
-
-        The expression definition is looked up with 
-        `lookup_annotation_name_defs`.
-        """
-        
-        typename = type(expr).__name__
-        if typename == 'Name':
-            try:
-                defs = lookup_annotation_name_defs(
-                    expr.id, self._scopes, self.locals)
-            except Exception:
-                return False
-            
-            for d in defs:
-                if type(d.node).__name__ == 'alias':
-                    # the symbol is an imported name
-                    import_alias = self.imports[d.node].target()
-                    if any(import_alias == n for n in qnames):
-                        return True
-                elif any('{}.{}'.format(mod, d.name()) in qnames for mod in self._modnames):
-                    # the symbol is a localy defined name
-                    return True
-                else:
-                    # localy defined name, but module name doesn't match
-                    break
-
-        elif typename == 'Attribute':
-            for n in qnames:
-                mod, _, _name = n.rpartition('.')
-                if mod and expr.attr == _name:
-                    if self._is_qualname(expr.value, set((mod,))):
-                        return True
-        return False
-
-    def _is_typing_name(self, expr, name):
-        return self._is_qualname(expr, set(('typing.{}'.format(name),
-                                           'typing_extensions.{}'.format(name))))
 
     def _dump_locals(self, node, only_live=False):
         """
@@ -1050,7 +1057,8 @@ class DefUseChains(ast.NodeVisitor):
             self.visit(target)
     
     def visit_AnnAssign(self, node):
-        if (self.is_stub and node.value and self._is_typing_name(
+        if (self.is_stub and node.value and matches_typing_name(
+                self._scopes, self.locals, self.imports, self._modnames,
                 node.annotation, 'TypeAlias')):
             # support for PEP 613 - Explicit Type Aliases
             # BUT an untyped global expression 'x=int' will NOT be considered a type alias.
@@ -1485,7 +1493,9 @@ class DefUseChains(ast.NodeVisitor):
     def visit_Call(self, node):
         dnode = self.chains.setdefault(node, Def(node))
         self.visit(node.func).add_user(dnode)
-        if self.is_stub and self._is_typing_name(node.func, 'TypeVar'):
+        if self.is_stub and matches_typing_name(
+                self._scopes, self.locals, self.imports, self._modnames, 
+                node.func, 'TypeVar'):
             # In stubs, constraints and bound argument 
             # of TypeVar() can be forward references.
             current_scopes = list(self._scopes)
