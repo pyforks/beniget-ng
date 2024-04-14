@@ -1,7 +1,7 @@
-from collections import defaultdict
+from collections import defaultdict, deque
 from contextlib import contextmanager
-import itertools
 import sys
+import os.path
 
 import ast as _ast
 import gast as ast
@@ -79,6 +79,99 @@ class Ancestors(ast.NodeVisitor):
 
     def parentStmt(self, node):
         return self.parentInstance(node, _ast.stmt)
+
+class ImportInfo:
+    """
+    Complement an `ast.alias` node with resolved 
+    origin module and name of the locally bound name.
+
+    :note: `orgname` will be ``*`` for wildcard imports.
+    """
+    __slots__ = 'orgmodule', 'orgname'
+
+    def __init__(self, orgmodule, orgname=None):
+        """
+        :param orgmodule: str
+        :param orgname: str or None
+        """
+        self.orgmodule = orgmodule
+        self.orgname = orgname
+    
+    def target(self):
+        """
+        Returns the qualified name of the the imported symbol, str.
+        """
+        if self.orgname:
+            return "{}.{}".format(self.orgmodule, self.orgname)
+        else:
+            return self.orgmodule
+
+
+# The MIT License (MIT)
+# Copyright (c) 2017 Jelle Zijlstra
+# Adapted from the project typeshed_client.
+def parse_import(node, modname, is_package=False):
+    """
+    Parse the given import node into a mapping of aliases to `ImportInfo`.
+    
+    :param node: the import node.
+    :param str modname: the name of the module.
+    :param bool is_package: whether the module is a package.
+    :rtype: dict[ast.alias, ImportInfo]
+    """
+    result = {}
+
+    typename = type(node).__name__
+    if typename == 'Import':
+        for al in node.names:
+            if al.asname:
+                result[al] = ImportInfo(orgmodule=al.name)
+            else:
+                # Here, we're not including information 
+                # regarding the submodules imported - if there is one.
+                # This is because this analysis map the names bounded by imports, 
+                # not the dependencies.
+                result[al] = ImportInfo(orgmodule=al.name.split(".", 1)[0])
+    
+    elif typename == 'ImportFrom':
+        current_module = tuple(modname.split("."))
+
+        if node.module is None:
+            module = ()
+        else:
+            module = tuple(node.module.split("."))
+        
+        if not node.level:
+            source_module = module
+        else:
+            # parse relative imports
+            if node.level == 1:
+                if is_package:
+                    relative_module = current_module
+                else:
+                    relative_module = current_module[:-1]
+            else:
+                if is_package:
+                    relative_module = current_module[: 1 - node.level]
+                else:
+                    relative_module = current_module[: -node.level]
+
+            if not relative_module:
+                # We don't raise errors when an relative import makes no sens, 
+                # we simply pad the name with dots.
+                relative_module = ("",) * node.level
+
+            source_module = relative_module + module
+
+        for alias in node.names:
+            result[alias] = ImportInfo(
+                orgmodule=".".join(source_module), orgname=alias.name
+            )
+
+    else:
+        raise TypeError('unexpected node type: {}'.format(type(node)))
+    
+    return result
 
 _novalue = object()
 @contextmanager
@@ -299,13 +392,123 @@ class def695(ast.stmt):
     def __init__(self, body, d):
         self.body = body # list of type params
         self.d = d # the wrapped definition node
+        
+def posixpath_splitparts(path):
+    """
+    Split a POSIX filename in parts.
+
+    >>> posixpath_splitparts('typing.pyi')
+    ('typing.pyi',)
+    
+    >>> posixpath_splitparts('/var/lib/config.ini')
+    ('var', 'lib', 'config.ini')
+
+    >>> posixpath_splitparts('/var/lib/config/')
+    ('var', 'lib', 'config')
+
+    >>> posixpath_splitparts('c:/dir/config.ini')
+    ('c:', 'dir', 'config.ini')
+    """
+    sep = '/'
+    r = deque(path.split(sep))
+    # make sure the parts doesn't 
+    # start or ends with a separator or empty string.
+    while r and r[0] in (sep, ''):
+        r.popleft()
+    while r and r[-1] in (sep, ''):
+        r.pop()
+    return tuple(r)
+
+def potential_module_names(filename):
+    """
+    Returns a tuple of potential module 
+    names deducted from the filename.
+
+    >>> potential_module_names('/var/lib/config.py')
+    ('var.lib.config', 'lib.config', 'config')
+    >>> potential_module_names('git-repos/pydoctor/pydoctor/driver.py')
+    ('pydoctor.pydoctor.driver', 'pydoctor.driver', 'driver')
+    >>> potential_module_names('git-repos/pydoctor/pydoctor/__init__.py')
+    ('pydoctor.pydoctor', 'pydoctor')
+    """
+    parts = posixpath_splitparts(filename)
+    mod = os.path.splitext(parts[-1])[0]
+    if mod == '__init__':
+        parts = parts[:-1]
+    else:
+        parts = parts[:-1] + (mod,)
+    
+    names = []
+    len_parts = len(parts)
+    for i in range(len_parts):
+        p = parts[i:]
+        if not p or any(not all(sb.isidentifier() 
+                        for sb in s.split('.')) for s in p):
+            # the path cannot be converted to a module name
+            # because there are unallowed caracters.
+            continue
+        names.append('.'.join(p))
+    
+    return tuple(names) or ('',)
+
+
+def matches_qualname(heads, locals, imports, modnames, expr, qnames):
+    """
+    Returns True if - one of - the expression's definition(s) matches
+    one of the given qualified names.
+
+    The expression definition is looked up with 
+    `lookup_annotation_name_defs`.
+
+    :param heads: The current scopes.
+    :param locals: The locals mapping.
+    :param imports: The mapping of resolved imports.
+    :param modnames: A collection containing the name of the current module. 
+    :param expr: The name/attribute expression to match.
+    :param qnames: A collection of qualified names to look for.
+    """
+    
+    typename = type(expr).__name__
+    if typename == 'Name':
+        try:
+            defs = lookup_annotation_name_defs(expr.id, heads, locals)
+        except Exception:
+            return False
+        
+        for d in defs:
+            if type(d.node).__name__ == 'alias':
+                # the symbol is an imported name
+                import_alias = imports[d.node].target()
+                if any(import_alias == n for n in qnames):
+                    return True
+            elif any('{}.{}'.format(mod, d.name()) in qnames for mod in modnames):
+                # the symbol is a localy defined name
+                return True
+            else:
+                # localy defined name, but module name doesn't match
+                break
+
+    elif typename == 'Attribute':
+        for n in qnames:
+            mod, _, _name = n.rpartition('.')
+            if mod and expr.attr == _name:
+                if matches_qualname(heads, locals, imports, modnames, expr.value, set((mod,))):
+                    return True
+    return False
+
+def matches_typing_name(heads, locals, imports, modnames, expr, name):
+    return matches_qualname(heads, locals, imports, modnames, expr, 
+                            set(('typing.{}'.format(name), 
+                                 'typing_extensions.{}'.format(name))))
 
 class DefUseChains(ast.NodeVisitor):
     """
     Module visitor that gathers two kinds of informations:
-        - locals: Dict[node, List[Def]], a mapping between a node and the list
+        - locals: dict[node, list[Def]], a mapping between a node and the list
           of variable defined in this node,
-        - chains: Dict[node, Def], a mapping between nodes and their chains.
+        - chains: dict[node, Def], a mapping between nodes and their chains.
+        - imports: dict[node, ImportInfo], a mapping between import aliases
+          and their resolved target.
 
     >>> import gast as ast
     >>> module = ast.parse("from b import c, d; c()")
@@ -322,14 +525,61 @@ class DefUseChains(ast.NodeVisitor):
     One instance of DefUseChains is only suitable to analyse one AST Module in it's lifecycle.
     """
 
-    def __init__(self, filename=None):
+    def __init__(self,
+                 filename=None,
+                 modname=None,
+                 future_annotations=False, 
+                 is_stub=False):
         """
-            - filename: str, included in error messages if specified
+            - filename: str, POSIX-like path pointing to the source file, 
+              you can use `Path.as_posix` to ensure the value has proper format. 
+              It's recommended to either provide the filename of the source
+              relative to the root of the package or provide both 
+              a module name and a filename.
+              Included in error messages and used as part of the import resolving.
+            - modname: str, fully qualified name of the module we're analysing. 
+              A module name may end with '.__init__' to indicate the module is a package.
+            - future_annotations: bool, PEP 563 mode. 
+              It will auotmatically be enabled if the module has ``from __future__ import annotations``.
+            - is_stub: bool, stub module semantics mode, implies future_annotations=True.
+              It will auotmatically be enabled if the filename endswith '.pyi'.
+              When the module is a stub file, there is no need for quoting to do a forward reference 
+              inside: 
+                - annotations (like PEP 563 mode)
+                - `TypeAlias`` values
+                - ``TypeVar()`` call arguments
+                - classe base expressions, keywords and decorators
+                - function decorators
         """
         self.chains = {}
         self.locals = defaultdict(list)
+        # mapping from ast.alias to their ImportInfo.
+        self.imports = {}
 
         self.filename = filename
+        self.is_stub = is_stub or filename is not None and filename.endswith('.pyi')
+        
+        # determine module name, we provide some flexibility: 
+        # - The module name is not required to have correct parsing when the 
+        #   filename is a relative filename that starts at the package root. 
+        # - We deduce whether the module is a package from module name or filename
+        #   if they ends with __init__.
+        # - The module name doesn't have to be provided to use matches_qualname() 
+        #   if filename is provided.
+        is_package = False
+        if filename and posixpath_splitparts(filename)[-1].split('.')[0] == '__init__':
+            is_package = True
+        if modname:
+            if modname.endswith('.__init__'):
+                modname = modname[:-9] # strip __init__
+                is_package = True
+            self._modnames = (modname, )
+        elif filename:
+            self._modnames = potential_module_names(filename)
+        else:
+            self._modnames = ('', )
+        self.modname = next(iter(self._modnames))
+        self.is_package = is_package
 
         # deep copy of builtins, to remain reentrant
         self._builtins = {k: Def(v) for k, v in Builtins.items()}
@@ -373,11 +623,12 @@ class DefUseChains(ast.NodeVisitor):
 
         # attributes set in visit_Module
         self.module = None
-        self.future_annotations = False
+        self.future_annotations = self.is_stub or future_annotations
 
     #
     ## helpers
     #
+
     def _dump_locals(self, node, only_live=False):
         """
         Like `dump_definitions` but returns the result grouped by symbol name and it includes linenos.
@@ -729,15 +980,22 @@ class DefUseChains(ast.NodeVisitor):
         if step is DeclarationStep:
             dnode = self.chains.setdefault(node, Def(node))
             self.add_to_locals(node.name, dnode)
-
+            currentscopes = list(self._scopes)
+            
             if not in_def695:
 
                 for kw_default in filter(None, node.args.kw_defaults):
                     self.visit(kw_default).add_user(dnode)
                 for default in node.args.defaults:
                     self.visit(default).add_user(dnode)
-                for decorator in node.decorator_list:
-                    self.visit(decorator)
+                
+                if self.is_stub:
+                    for decorator in node.decorator_list:
+                        self._defered_annotations[-1].append((
+                            decorator, currentscopes, None))
+                else:
+                    for decorator in node.decorator_list:
+                        self.visit(decorator)
 
                 if any(getattr(node, 'type_params', [])):
                     self.visit_def695(def695(body=node.type_params, d=node))
@@ -757,7 +1015,6 @@ class DefUseChains(ast.NodeVisitor):
 
             else:
                 # annotations are to be analyzed later as well
-                currentscopes = list(self._scopes)
                 if node.returns:
                     try:
                         _validate_annotation_body(node.returns)
@@ -818,31 +1075,60 @@ class DefUseChains(ast.NodeVisitor):
     def visit_ClassDef(self, node, in_def695=False):
         dnode = self.chains.setdefault(node, Def(node))
         self.add_to_locals(node.name, dnode)
-        
+        currentscopes = list(self._scopes)
+
         if not in_def695:
-            for decorator in node.decorator_list:
-                self.visit(decorator).add_user(dnode)
+            if self.is_stub:
+                for decorator in node.decorator_list:
+                    self._defered_annotations[-1].append((
+                        decorator, currentscopes, lambda ddecorator: ddecorator.add_user(dnode)))
+            else:
+                for decorator in node.decorator_list:
+                    self.visit(decorator).add_user(dnode)
 
             if any(getattr(node, 'type_params', [])):
                 self.visit_def695(def695(body=node.type_params, d=node))
                 return
-
-        for base in node.bases:
-            if in_def695:
-                try:
-                    _validate_annotation_body(base)
-                except SyntaxError as e:
-                    self.warn(str(e), base)
-                    continue
-            self.visit(base).add_user(dnode)
-        for keyword in node.keywords:
-            if in_def695:
-                try:
-                    _validate_annotation_body(keyword)
-                except SyntaxError as e:
-                    self.warn(str(e), keyword)
-                    continue
-            self.visit(keyword.value).add_user(dnode)
+        
+        if self.is_stub:
+            # special treatment for classes in stub modules
+            # so they can contain forward-references.
+            for base in node.bases:
+                if in_def695:
+                    try:
+                        _validate_annotation_body(base)
+                    except SyntaxError as e:
+                        self.warn(str(e), base)
+                        continue
+                self._defered_annotations[-1].append((
+                    base, currentscopes, lambda dbase: dbase.add_user(dnode)))
+            for keyword in node.keywords:
+                if in_def695:
+                    try:
+                        _validate_annotation_body(keyword)
+                    except SyntaxError as e:
+                        self.warn(str(e), keyword)
+                        continue
+                self._defered_annotations[-1].append((
+                    keyword.value, currentscopes, lambda dkeyword: dkeyword.add_user(dnode)))
+            
+        else:
+            for base in node.bases:
+                if in_def695:
+                    try:
+                        _validate_annotation_body(base)
+                    except SyntaxError as e:
+                        self.warn(str(e), base)
+                        continue
+                self.visit(base).add_user(dnode)
+            for keyword in node.keywords:
+                if in_def695:
+                    try:
+                        _validate_annotation_body(keyword)
+                    except SyntaxError as e:
+                        self.warn(str(e), keyword)
+                        continue
+                self.visit(keyword.value).add_user(dnode)
 
         with self.ScopeContext(node):
             self.set_definition("__class__", Def("__class__"))
@@ -877,10 +1163,18 @@ class DefUseChains(ast.NodeVisitor):
         self.visit(node.value)
         for target in node.targets:
             self.visit(target)
-
+    
     def visit_AnnAssign(self, node):
-        if node.value:
-            self.visit(node.value)
+        if (self.is_stub and node.value and matches_typing_name(
+                self._scopes, self.locals, self.imports, self._modnames,
+                node.annotation, 'TypeAlias')):
+            # support for PEP 613 - Explicit Type Aliases
+            # BUT an untyped global expression 'x=int' will NOT be considered a type alias.
+            self._defered_annotations[-1].append(
+                (node.value, list(self._scopes), None))
+        elif node.value:
+            dvalue = self.visit(node.value)
+        
         if not self.future_annotations:
             self.visit(node.annotation)
         else:
@@ -1110,6 +1404,7 @@ class DefUseChains(ast.NodeVisitor):
             base = alias.name.split(".", 1)[0]
             self.set_definition(alias.asname or base, dalias)
             self.add_to_locals(alias.asname or base, dalias)
+        self.imports.update(parse_import(node, self.modname, is_package=self.is_package))
 
     def visit_ImportFrom(self, node):
         for alias in node.names:
@@ -1119,6 +1414,7 @@ class DefUseChains(ast.NodeVisitor):
             else:
                 self.set_definition(alias.asname or alias.name, dalias)
             self.add_to_locals(alias.asname or alias.name, dalias)
+        self.imports.update(parse_import(node, self.modname, is_package=self.is_package))
 
     def visit_Global(self, node):
         for name in node.names:
@@ -1357,10 +1653,25 @@ class DefUseChains(ast.NodeVisitor):
     def visit_Call(self, node):
         dnode = self.chains.setdefault(node, Def(node))
         self.visit(node.func).add_user(dnode)
-        for arg in node.args:
-            self.visit(arg).add_user(dnode)
-        for kw in node.keywords:
-            self.visit(kw.value).add_user(dnode)
+        if self.is_stub and matches_typing_name(
+                self._scopes, self.locals, self.imports, self._modnames, 
+                node.func, 'TypeVar'):
+            # In stubs, constraints and bound argument 
+            # of TypeVar() can be forward references.
+            current_scopes = list(self._scopes)
+            for arg in node.args:
+                self._defered_annotations[-1].append(
+                    (arg, current_scopes,
+                    lambda darg:darg.add_user(dnode)))
+            for kw in node.keywords:
+                self._defered_annotations[-1].append(
+                    (kw.value, current_scopes,
+                    lambda dkw:dkw.add_user(dnode)))
+        else:
+            for arg in node.args:
+                self.visit(arg).add_user(dnode)
+            for kw in node.keywords:
+                self.visit(kw.value).add_user(dnode)
         return dnode
 
     visit_Repr = visit_Await
