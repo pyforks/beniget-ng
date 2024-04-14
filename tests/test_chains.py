@@ -1833,7 +1833,7 @@ class B[decorator](object):
 '''
         self.checkChains(code,  ['decorator -> (decorator -> (B -> ()))', 
                                  'B -> ()'])
-    
+    @skipIf(sys.version_info < (3,12), "Python 3.12 syntax")
     def test_pep695_gen_exp_in_nested_class(self):
         # from https://github.com/python/cpython/pull/109196/files
         code = """
@@ -1845,7 +1845,8 @@ class B[decorator](object):
         """
         self.checkChains(code, ['make_base -> (make_base -> (Call -> (Inner -> ())), make_base -> (Call -> (Inner -> ())))', 'C -> ()'])
     
-    def test_listcomp_in_nested_class(self):
+    @skipIf(sys.version_info < (3,12), "Python 3.12 syntax")
+    def test_pep695_listcomp_in_nested_class(self):
         code = """
             from test.test_type_params import make_base
             class C[T]:
@@ -1855,7 +1856,8 @@ class B[decorator](object):
         """
         self.checkChains(code, ['make_base -> (make_base -> (Call -> (Inner -> ())), make_base -> (Call -> (Inner -> ())))', 'C -> ()'])
     
-    def test_gen_exp_in_nested_generic_class(self):
+    @skipIf(sys.version_info < (3,12), "Python 3.12 syntax")
+    def test_pep695_gen_exp_in_nested_generic_class(self):
         code = """
             from test.test_type_params import make_base
             class C[T]:
@@ -1865,7 +1867,8 @@ class B[decorator](object):
         """
         self.check_message(code, ['W: generator expression cannot be used in annotation scope within class scope'])
     
-    def test_listcomp_in_nested_generic_class(self):
+    @skipIf(sys.version_info < (3,12), "Python 3.12 syntax")
+    def test_pep695_listcomp_in_nested_generic_class(self):
         code = """
             from test.test_type_params import make_base
             class C[T]:
@@ -1875,7 +1878,8 @@ class B[decorator](object):
         """
         self.check_message(code, ['W: comprehension cannot be used in annotation scope within class scope at <unknown>:5:19'])
 
-    def test_gen_exp_in_generic_method(self):
+    @skipIf(sys.version_info < (3,12), "Python 3.12 syntax")
+    def test_pep695_gen_exp_in_generic_method(self):
         code = """
             class C[T]:
                 T = "class"
@@ -1884,7 +1888,8 @@ class B[decorator](object):
         """
         self.check_message(code, ['W: generator expression cannot be used in annotation scope within class scope'])
 
-    def test_nested_scope_in_generic_alias(self):
+    @skipIf(sys.version_info < (3,12), "Python 3.12 syntax")
+    def test_pep695_nested_scope_in_generic_alias(self):
         code = """
             class C[T]:
                 T = "class"
