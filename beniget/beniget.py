@@ -1000,6 +1000,8 @@ class DefUseChains(ast.NodeVisitor):
                 if any(getattr(node, 'type_params', [])):
                     self.visit_def695(def695(body=node.type_params, d=node))
                     return
+            
+            parent_typename = type(currentscopes[-1 if not in_def695 else -2]).__name__
 
             if not self.future_annotations:
                 for arg in _iter_arguments(node.args):
@@ -1008,6 +1010,8 @@ class DefUseChains(ast.NodeVisitor):
                         if in_def695:
                             try:
                                 _validate_annotation_body(annotation)
+                                if parent_typename == 'ClassDef':
+                                    _validate_annotation_body_within_class_scope(annotation)
                             except SyntaxError as e :
                                 self.warn(str(e), annotation)
                                 continue
@@ -1018,6 +1022,8 @@ class DefUseChains(ast.NodeVisitor):
                 if node.returns:
                     try:
                         _validate_annotation_body(node.returns)
+                        if in_def695 and parent_typename == 'ClassDef':
+                            _validate_annotation_body_within_class_scope(node.returns)
                     except SyntaxError as e :
                         self.warn(str(e), node.returns)
                     else:
@@ -1027,6 +1033,8 @@ class DefUseChains(ast.NodeVisitor):
                     if arg.annotation:
                         try:
                             _validate_annotation_body(arg.annotation)
+                            if in_def695 and parent_typename == 'ClassDef':
+                                _validate_annotation_body_within_class_scope(arg.annotation)
                         except SyntaxError as e :
                             self.warn(str(e), arg.annotation)
                             continue
@@ -1037,6 +1045,8 @@ class DefUseChains(ast.NodeVisitor):
                 if in_def695:
                     try:
                         _validate_annotation_body(node.returns)
+                        if in_def695 and parent_typename == 'ClassDef':
+                                _validate_annotation_body_within_class_scope(node.returns)
                     except SyntaxError as e:
                         self.warn(str(e), node.returns)
                     else:
@@ -1090,6 +1100,8 @@ class DefUseChains(ast.NodeVisitor):
                 self.visit_def695(def695(body=node.type_params, d=node))
                 return
         
+        parent_typename = type(currentscopes[-1 if not in_def695 else -2]).__name__
+
         if self.is_stub:
             # special treatment for classes in stub modules
             # so they can contain forward-references.
@@ -1097,6 +1109,8 @@ class DefUseChains(ast.NodeVisitor):
                 if in_def695:
                     try:
                         _validate_annotation_body(base)
+                        if parent_typename == 'ClassDef':
+                            _validate_annotation_body_within_class_scope(base)
                     except SyntaxError as e:
                         self.warn(str(e), base)
                         continue
@@ -1106,6 +1120,8 @@ class DefUseChains(ast.NodeVisitor):
                 if in_def695:
                     try:
                         _validate_annotation_body(keyword)
+                        if parent_typename == 'ClassDef':
+                            _validate_annotation_body_within_class_scope(keyword)
                     except SyntaxError as e:
                         self.warn(str(e), keyword)
                         continue
@@ -1117,6 +1133,8 @@ class DefUseChains(ast.NodeVisitor):
                 if in_def695:
                     try:
                         _validate_annotation_body(base)
+                        if parent_typename == 'ClassDef':
+                            _validate_annotation_body_within_class_scope(base)
                     except SyntaxError as e:
                         self.warn(str(e), base)
                         continue
@@ -1125,6 +1143,8 @@ class DefUseChains(ast.NodeVisitor):
                 if in_def695:
                     try:
                         _validate_annotation_body(keyword)
+                        if parent_typename == 'ClassDef':
+                            _validate_annotation_body_within_class_scope(keyword)
                     except SyntaxError as e:
                         self.warn(str(e), keyword)
                         continue
@@ -1228,10 +1248,14 @@ class DefUseChains(ast.NodeVisitor):
             if not in_def695 and any(getattr(node, 'type_params', [])):
                 self.visit_def695(def695(body=node.type_params, d=node))
                 return
+            
+            parent_typename = type(self._scopes[-1 if not in_def695 else -2]).__name__
 
             dnode = self.chains.setdefault(node, Def(node))
             try:
                 _validate_annotation_body(node.value)
+                if parent_typename == 'ClassDef':
+                    _validate_annotation_body_within_class_scope(node.value)
             except SyntaxError as e:
                 self.warn(str(e), node.value)
             else:
@@ -1911,7 +1935,12 @@ _node_type_to_human_name = {
     'NamedExpr': 'assignment expression',
     'Yield': 'yield keyword',
     'YieldFrom': 'yield keyword',
-    'Await': 'await keyword'
+    'Await': 'await keyword',
+    'ListComp': 'comprehension',
+    'SetComp': 'comprehension',
+    'DictComp': 'comprehension',
+    'GeneratorExp': 'generator expression',
+    'Lambda': 'lambda expression'
 }
 
 def _validate_annotation_body(node):
@@ -1925,6 +1954,15 @@ def _validate_annotation_body(node):
                     ('NamedExpr', 'Yield', 'YieldFrom', 'Await')):
         name = _node_type_to_human_name.get(type(illegal).__name__, 'current syntax')
         raise SyntaxError(f'{name} cannot be used in annotation-like scopes')
+
+def _validate_annotation_body_within_class_scope(node):
+    """
+    Raises SyntaxError if a nested scope is used.
+    """
+    for illegal in (n for n in ast.walk(node) if type(n).__name__ in  
+                    ('ListComp', 'GeneratorExp', 'SetComp', 'DictComp', 'Lambda')):
+        name = _node_type_to_human_name.get(type(illegal).__name__, 'current syntax')
+        raise SyntaxError(f'{name} cannot be used in annotation scope within class scope')
 
 def _iter_arguments(args):
     """

@@ -1,4 +1,5 @@
 from contextlib import contextmanager
+from textwrap import dedent
 from unittest import TestCase, skipIf
 import unittest
 import beniget.standard
@@ -58,7 +59,7 @@ class TestDefUseChains(TestCase):
     ast = _gast
     maxDiff = None
     def checkChains(self, code, ref, strict=True, is_stub=False, filename=None, modname=None):
-        node = self.ast.parse(code)
+        node = self.ast.parse(dedent(code))
         if strict:
             c = getStrictDefUseChains(node)(is_stub=is_stub, 
                     filename=filename, modname=modname)
@@ -71,7 +72,7 @@ class TestDefUseChains(TestCase):
         return node, c
     
     def checkUseDefChains(self, code, ref, strict=True):
-        node = self.ast.parse(code)
+        node = self.ast.parse(dedent(code))
         if strict:
             c = getStrictDefUseChains(node)()
         else:
@@ -512,7 +513,7 @@ def outer():
         self.assertEqual(c.dump_chains(node.body[0].body[0]), ['mytype -> (mytype -> (Call -> ()))'])
 
     def check_message(self, code, expected_messages, filename=None):
-        node = self.ast.parse(code)
+        node = self.ast.parse(dedent(code))
         c = getDefUseChainsType(node)(filename)
         with captured_output() as (out, err):
             c.visit(node)
@@ -1832,6 +1833,74 @@ class B[decorator](object):
 '''
         self.checkChains(code,  ['decorator -> (decorator -> (B -> ()))', 
                                  'B -> ()'])
+    
+    def test_pep695_gen_exp_in_nested_class(self):
+        # from https://github.com/python/cpython/pull/109196/files
+        code = """
+        from test.test_type_params import make_base
+        class C[T]:
+            T = "class"
+            class Inner(make_base(T for _ in (1,)), make_base(T)):
+                pass
+        """
+        self.checkChains(code, ['make_base -> (make_base -> (Call -> (Inner -> ())), make_base -> (Call -> (Inner -> ())))', 'C -> ()'])
+    
+    def test_listcomp_in_nested_class(self):
+        code = """
+            from test.test_type_params import make_base
+            class C[T]:
+                T = "class"
+                class Inner(make_base([T for _ in (1,)]), make_base(T)):
+                    pass
+        """
+        self.checkChains(code, ['make_base -> (make_base -> (Call -> (Inner -> ())), make_base -> (Call -> (Inner -> ())))', 'C -> ()'])
+    
+    def test_gen_exp_in_nested_generic_class(self):
+        code = """
+            from test.test_type_params import make_base
+            class C[T]:
+                T = "class"
+                class Inner[U](make_base(T for _ in (1,)), make_base(T)):
+                    pass
+        """
+        self.check_message(code, ['W: generator expression cannot be used in annotation scope within class scope'])
+    
+    def test_listcomp_in_nested_generic_class(self):
+        code = """
+            from test.test_type_params import make_base
+            class C[T]:
+                T = "class"
+                class Inner[U](make_base([T for _ in (1,)]), make_base(T)):
+                    pass
+        """
+        self.check_message(code, ['W: comprehension cannot be used in annotation scope within class scope at <unknown>:5:19'])
+
+    def test_gen_exp_in_generic_method(self):
+        code = """
+            class C[T]:
+                T = "class"
+                def meth[U](x: (T for _ in (1,)), y: T):
+                    pass
+        """
+        self.check_message(code, ['W: generator expression cannot be used in annotation scope within class scope'])
+
+    def test_nested_scope_in_generic_alias(self):
+        code = """
+            class C[T]:
+                T = "class"
+                {}
+        """
+        error_cases = [
+            "type Alias1[T] = lambda: T",
+            "type Alias2 = lambda: T",
+            "type Alias3[T] = (T for _ in (1,))",
+            "type Alias4 = (T for _ in (1,))",
+            "type Alias5[T] = [T for _ in (1,)]",
+            "type Alias6 = [T for _ in (1,)]",
+        ]
+        for case in error_cases:
+            with self.subTest(case=case):
+                self.check_message(code.format(case), ["in annotation scope within class scope"])
         
     @skipIf(sys.version_info < (3,10), "Python 3.10 syntax")
     def test_match_value(self):
