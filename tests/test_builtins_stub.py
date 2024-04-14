@@ -1,5 +1,6 @@
-from unittest import TestCase
+from unittest import TestCase, skipIf
 import pathlib
+import sys
 import ast as _ast
 import gast as _gast
 
@@ -10,6 +11,7 @@ testmodules = pathlib.Path(__file__).parent / 'testmodules'
 class TestBuiltinsStubs(TestCase):
     ast = _gast
 
+    @skipIf(sys.version_info < (3, 8), reason='positional only syntax is used')
     def test_buitlins_stub(self):
         file = testmodules / 'builtins.pyi'
         filename = file.as_posix()
